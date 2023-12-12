@@ -48,7 +48,10 @@ from data.gpt2_multi_task_dataset import load_dataset_from_jsonl, compile_helper
 from utils.common_utils import generate_task_id, TASK2ID, ID2TASK
 from train_utils import accelerate_train
 from model_mapping import MODEL_TYPES, QLORA_TARGETING_MODULES, MODEL_SPECIAL_TOKENS
+
 logger = get_logger(__name__)
+
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
 def get_task_mask(args, task_id):
@@ -95,7 +98,7 @@ class DataCollatorForMFTDataset(object):
                 position_ids=batch['position_ids'],
             )
         '''
-        
+
         # if loss_mask is not None:
         loss_mask = torch.tensor(np.array(loss_mask))
         if self.args.use_dynamic_padding:
@@ -108,7 +111,7 @@ class DataCollatorForMFTDataset(object):
 
         input_ids = torch.tensor(np.array(input_ids)).long()
         # print(f"shape of input_ids: {input_ids.shape}")
-        result_batch['input_ids'] = input_ids[:, :max_pos-1].contiguous()
+        result_batch['input_ids'] = input_ids[:, :max_pos - 1].contiguous()
         result_batch['labels'] = input_ids[:, 1:max_pos].contiguous()
 
         # Get the masks and position ids.
@@ -171,7 +174,6 @@ def pprint_args(args, accelerator):
 
 
 def get_configs():
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_config", type=str, default='./train_config.json')
 
@@ -192,7 +194,7 @@ def main():
         train_config = json.load(f)
 
     args = argparse.Namespace(**train_config)
-    
+
     # get eos token和 pad token
     args.eos_token = MODEL_SPECIAL_TOKENS[args.model_type]['eos_token']
     args.pad_token = MODEL_SPECIAL_TOKENS[args.model_type]['pad_token']
@@ -211,7 +213,7 @@ def main():
     if args.peft_type == 'qlora' and args.quantization != '4bit' and args.quantization != '8bit':
         print(f"[WARNING]peft_type is qlora but quantization is not 4bit or 8bit, setting it to 4bit")
         args.quantization = '4bit'
-    
+
     # define accelerator
     accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
     pprint_args(args, accelerator)
@@ -232,7 +234,7 @@ def main():
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
         time.sleep(10)
-    
+
     if args.seed is not None:
         set_seed(args.seed)
 
@@ -242,12 +244,13 @@ def main():
     args.world_size = accelerator.num_processes
     global_rank = accelerator.process_index
     print(f'world_size: {args.world_size}, global_rank: {global_rank}, local_rank: {accelerator.local_process_index}')
-    
+
     # TASK2ID, ID2TASK
     generate_task_id(args.data_paths)
     # # multi task blendable dataset(sharded)
     train_dataset, valid_dataset = load_dataset_from_jsonl(args, shard_data=True, world_size=args.world_size,
-                                                           global_rank=global_rank, local_rank=accelerator.local_process_index)
+                                                           global_rank=global_rank,
+                                                           local_rank=accelerator.local_process_index)
     t1 = time.time()
     logger.info(f"dataset loading time: {t1 - t0:.4f}")
 
@@ -266,7 +269,7 @@ def main():
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         target_modules=QLORA_TARGETING_MODULES[args.model_type],
-       
+
     )
 
     # creating base model
@@ -275,23 +278,23 @@ def main():
         args.pretrained_model_path,
         # max_memory=max_memory,
         # trust_remote_code=True,
-        load_in_8bit=(args.quantization=='8bit'),
-        load_in_4bit=(args.quantization=='4bit'),
+        load_in_8bit=(args.quantization == '8bit'),
+        load_in_4bit=(args.quantization == '4bit'),
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=args.low_cpu_mem_usage,  # not for zero3
         use_safetensors=False,
         quantization_config=BitsAndBytesConfig(
-            load_in_4bit=(args.quantization=='4bit'),
+            load_in_4bit=(args.quantization == '4bit'),
             # llm_int8_threshold=6.0,
             # llm_int8_has_fp16_weight=False,
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
-        ) if args.quantization=='4bit' else None,
+        ) if args.quantization == '4bit' else None,
     )
 
-    accelerator.print("load in 8bit: ", args.quantization=='8bit')
-    accelerator.print("load in 4bit: ", args.quantization=='4bit')
+    accelerator.print("load in 8bit: ", args.quantization == '8bit')
+    accelerator.print("load in 4bit: ", args.quantization == '4bit')
     if args.peft_type == 'lora':
         # for name, param in model.named_parameters():
         #     # cast layer norm in fp32 for stability
@@ -320,7 +323,7 @@ def main():
         logging.info(f"model loading time: {t2 - t1:.4f}")
     model.print_trainable_parameters()
     model.config.use_cache = False  # silence the warnings. Please re-enable for inference!
-    model.config.use_logn_attn = False # special for qwen model
+    model.config.use_logn_attn = False  # special for qwen model
     accelerator.print(model.config)
 
     # dataloader
@@ -378,7 +381,8 @@ def main():
     accelerator.print(f"is_ds_zero_3: {is_ds_zero_3}")
 
     # Train!
-    accelerate_train(accelerator, model, train_dataloader, valid_dataloader, optimizer, lr_scheduler, num_update_steps_per_epoch, len(train_dataset), args)
+    accelerate_train(accelerator, model, train_dataloader, valid_dataloader, optimizer, lr_scheduler,
+                     num_update_steps_per_epoch, len(train_dataset), args)
 
 
 if __name__ == "__main__":
